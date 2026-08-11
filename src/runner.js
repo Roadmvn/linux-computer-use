@@ -37,11 +37,25 @@ export function run(session, args, { timeout = 60000 } = {}) {
   const argv = [`-s=${session}`, ...args];
   const useNode = bin.endsWith('.js');
 
+  // A value starting with "-" would be read as a flag by the CLI, so a crafted
+  // url or ref could turn into an option. Only the flags this module builds
+  // itself are allowed to look like flags.
+  const OWN_FLAGS = /^--(headed|persistent|profile|browser|filename|cdp)(=|$)/;
+  const sneaky = args.find((a) => typeof a === 'string' && a.startsWith('-') && !OWN_FLAGS.test(a));
+  if (sneaky) {
+    return Promise.resolve({
+      ok: false, stdout: '', code: -1,
+      stderr: `refused: argument "${sneaky}" starts with "-" and would be read as an option`,
+    });
+  }
+
   return new Promise((resolve) => {
     const child = spawn(
       useNode ? process.execPath : bin,
       useNode ? [bin, ...argv] : argv,
-      { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, DISPLAY: process.env.DISPLAY || ':0' } }
+      // DISPLAY is inherited, never invented: forcing :0 only ever worked on
+      // the machine this was written on.
+      { stdio: ['ignore', 'pipe', 'pipe'], env: process.env }
     );
 
     let stdout = '';
@@ -88,13 +102,34 @@ export async function evaluate(session, expression) {
   return run(session, ['eval', `eval(atob(${JSON.stringify(encoded)}))`]);
 }
 
-/** Extract a JSON payload that a page expression returned. */
+/**
+ * Extract a JSON payload a page expression returned.
+ *
+ * The CLI prints the value under a "### Result" heading as a JSON encoded
+ * string, so it needs decoding twice. This is deliberately strict: callers
+ * treat null as "I could not read the page" and refuse the action, so a
+ * greedy regex that half-succeeds would silently disable a guardrail.
+ */
 export function parseJsonResult(stdout) {
-  const fenced = stdout.match(/\{[\s\S]*\}/);
-  if (!fenced) return null;
+  const lines = stdout.split('\n');
+  const marker = lines.findIndex((l) => l.trim() === '### Result');
+  if (marker === -1) return null;
+
+  const payload = lines.slice(marker + 1).find((l) => l.trim().length > 0);
+  if (!payload) return null;
+
   try {
-    return JSON.parse(fenced[0].replace(/\\"/g, '"'));
+    const decoded = JSON.parse(payload.trim());
+    const value = typeof decoded === 'string' ? JSON.parse(decoded) : decoded;
+    return value && typeof value === 'object' ? value : null;
   } catch {
     return null;
   }
+}
+
+/** A headed browser needs a display server. Say so plainly instead of leaking a stack trace. */
+export function displayProblem() {
+  if (process.env.DISPLAY || process.env.WAYLAND_DISPLAY) return null;
+  return 'No DISPLAY or WAYLAND_DISPLAY is set, so a browser window cannot open. '
+    + 'Run inside a graphical session, or wrap the client in xvfb-run for a headless machine.';
 }

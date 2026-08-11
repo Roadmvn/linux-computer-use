@@ -7,12 +7,12 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
-import { evaluate, run } from './runner.js';
+import { displayProblem, evaluate, run } from './runner.js';
 import { CURSOR_SOURCE } from './cursor.js';
 import { check } from './policy.js';
 import {
-  audit, auditPath, getLease, getMode, getSession,
-  markSnapshotStale, rememberSnapshot, setLease, setMode, setSession,
+  audit, auditPath, getLease, getMode, getSession, leasePath,
+  markSnapshotStale, rememberSnapshot, safeUrl, setMode, setSession, takeOver,
 } from './state.js';
 
 const VERSION = '0.1.0';
@@ -26,9 +26,9 @@ const TOOLS = [
       properties: {
         url: { type: 'string', description: 'URL to load once the browser is up.' },
         session: { type: 'string', description: 'Session name. Sessions have separate cookies and tabs. Defaults to "default".' },
-        profile: { type: 'string', description: 'Path to a persistent profile directory, to keep logins between runs.' },
-        browser: { type: 'string', description: 'chrome, firefox, webkit or msedge. Defaults to bundled Chromium.' },
-        cdp: { type: 'string', description: 'Attach to an existing browser instead of launching one, e.g. http://127.0.0.1:9222' },
+        profile: { type: 'string', description: 'Path to a persistent profile directory, to keep logins between runs. Ignored when cdp is set, since the running browser already has its own.' },
+        browser: { type: 'string', description: 'chromium (default, the bundled build), chrome, firefox, webkit or msedge. Ignored when cdp is set.' },
+        cdp: { type: 'string', description: 'Attach to a browser already running with --remote-debugging-port instead of launching one, e.g. http://127.0.0.1:9222' },
       },
     },
   },
@@ -65,7 +65,7 @@ const TOOLS = [
   },
   {
     name: 'type',
-    description: 'Type text into the focused element. Refused while a login form has an empty password field.',
+    description: 'Type text into the focused element. Refused when a password field has focus.',
     inputSchema: {
       type: 'object',
       properties: { text: { type: 'string' } },
@@ -99,6 +99,7 @@ const TOOLS = [
         action: { type: 'string', enum: ['move', 'click', 'down', 'up', 'wheel'] },
         x: { type: 'number' },
         y: { type: 'number' },
+        confirm: { type: 'boolean', description: 'Set true only after a human approved an action flagged as irreversible.' },
       },
       required: ['action'],
     },
@@ -127,11 +128,11 @@ const TOOLS = [
   },
   {
     name: 'status',
-    description: 'Report the session, the mode and who holds the control lease. Pass takeover to hand control to the human, or release it back to the agent.',
+    description: 'Report the session, the mode and who holds the control lease. Pass takeover: true to hand control to the human before they act in the dashboard. Control comes back only when the human releases it on their machine, never through this tool.',
     inputSchema: {
       type: 'object',
       properties: {
-        takeover: { type: 'boolean', description: 'true when the human takes control in the dashboard, false when they give it back.' },
+        takeover: { type: 'boolean', description: 'true to hand control to the human. There is no value that takes it back.' },
       },
     },
   },
@@ -153,6 +154,16 @@ async function injectCursor(session) {
   await evaluate(session, CURSOR_SOURCE);
 }
 
+/**
+ * Let the overlay follow the next few moments of input.
+ *
+ * Without this the cursor tracked the human's pointer too, so the two were
+ * impossible to tell apart during a takeover.
+ */
+async function armCursor(session) {
+  await evaluate(session, 'window.__lcuArm && window.__lcuArm(3000)');
+}
+
 async function handle(name, args) {
   const session = args.session || getSession();
 
@@ -170,10 +181,15 @@ async function handle(name, args) {
       if (args.cdp) {
         result = await run(target, ['attach', `--cdp=${args.cdp}`], { timeout: 90000 });
       } else {
+        const problem = displayProblem();
+        if (problem) return text(`CANNOT OPEN A BROWSER\n\n${problem}`);
         const argv = ['open', '--headed'];
         if (args.url) argv.splice(1, 0, args.url);
         if (args.profile) { argv.push('--persistent', `--profile=${args.profile}`); }
-        if (args.browser) argv.push(`--browser=${args.browser}`);
+        // Default to the bundled build. Upstream defaults to the chrome
+        // channel, which is not what the installer downloads, so a machine
+        // without Google Chrome failed on the very first call.
+        argv.push(`--browser=${args.browser || 'chromium'}`);
         result = await run(target, argv, { timeout: 120000 });
       }
       if (args.cdp && args.url) await run(target, ['goto', args.url]);
@@ -186,7 +202,8 @@ async function handle(name, args) {
       const result = await run(session, ['goto', args.url]);
       await injectCursor(session);
       markSnapshotStale();
-      audit({ tool: 'goto', session, url: args.url });
+      // origin only: paths carry magic-link and password-reset tokens
+      audit({ tool: 'goto', session, origin: safeUrl(args.url) });
       return text(result.stdout || result.stderr);
     }
 
@@ -211,7 +228,11 @@ async function handle(name, args) {
     }
 
     case 'click': {
+      await armCursor(session);
       const result = await run(session, ['click', String(args.ref)]);
+      // A click routinely navigates, which invalidates every other ref.
+      markSnapshotStale();
+      await injectCursor(session);
       audit({ tool: 'click', session, ref: args.ref, confirmed: Boolean(args.confirm) });
       return text(result.stdout || result.stderr);
     }
@@ -231,7 +252,11 @@ async function handle(name, args) {
 
     case 'press': {
       const result = await run(session, ['press', String(args.key)]);
-      audit({ tool: 'press', session, key: args.key });
+      markSnapshotStale();
+      await injectCursor(session);
+      // The key itself is never logged: a password typed one press at a time
+      // would otherwise be reconstructible from this file.
+      audit({ tool: 'press', session });
       return text(result.stdout || result.stderr);
     }
 
@@ -245,12 +270,14 @@ async function handle(name, args) {
         click: [['mousemove', String(x), String(y)], ['mousedown'], ['mouseup']],
       }[action];
       if (!moves) return text(`unknown mouse action: ${action}`);
+      await armCursor(session);
       let out = '';
       for (const argv of moves) {
         const result = await run(session, argv);
         out = result.stdout || result.stderr;
       }
-      audit({ tool: 'mouse', session, action, x, y });
+      if (action !== 'move') { markSnapshotStale(); await injectCursor(session); }
+      audit({ tool: 'mouse', session, action, x, y, confirmed: Boolean(args.confirm) });
       return text(out || `mouse ${action} done`);
     }
 
@@ -279,18 +306,19 @@ async function handle(name, args) {
     }
 
     case 'status': {
-      if (args.takeover === true) setLease('human');
-      if (args.takeover === false) setLease('agent');
+      if (args.takeover === true) takeOver();
       audit({ tool: 'status', session, lease: getLease() });
+      const human = getLease() === 'human';
       return text(JSON.stringify({
         version: VERSION,
         session,
         mode: getMode(),
         lease: getLease(),
         auditLog: auditPath,
-        note: getLease() === 'human'
-          ? 'The human is driving. The agent cannot act until control is released.'
+        note: human
+          ? `The human is driving. The agent cannot act. Control returns only when the human deletes ${leasePath} on their machine, which this tool cannot do.`
           : 'The agent is driving. Call snapshot after any human takeover before reusing refs.',
+        releaseCommand: human ? `rm ${leasePath}` : undefined,
       }, null, 2));
     }
 

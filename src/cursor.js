@@ -54,19 +54,39 @@ function overlay() {
   ].join(';');
   root.appendChild(ring);
 
+  /**
+   * The pointer only follows events the agent caused.
+   *
+   * Listening to every mousemove meant the human's own pointer dragged the
+   * agent's cursor around, which is backwards: during a takeover the two
+   * became indistinguishable. The server raises this flag immediately before
+   * it acts, and it expires on its own, so human movement never moves it.
+   */
+  window.__lcuArm = (ms) => { window.__lcuArmedUntil = Date.now() + (ms || 3000); };
+  const armed = () => Date.now() < (window.__lcuArmedUntil || 0);
+
+  // Injected after every action, so bind the listeners once per document:
+  // otherwise each injection stacks another pair on the same page.
+  if (window.__lcuBound) return 'lcu-cursor-ready';
+  window.__lcuBound = true;
+
   addEventListener('mousemove', (event) => {
-    cursor.style.left = event.clientX + 'px';
-    cursor.style.top = event.clientY + 'px';
+    const el = document.getElementById(CURSOR_ID);
+    if (!el || !armed()) return;
+    el.style.left = event.clientX + 'px';
+    el.style.top = event.clientY + 'px';
   }, true);
 
   addEventListener('mousedown', (event) => {
-    ring.style.left = event.clientX + 'px';
-    ring.style.top = event.clientY + 'px';
-    ring.style.opacity = '1';
-    ring.style.transform = 'scale(1)';
+    const el = document.getElementById(RING_ID);
+    if (!el || !armed()) return;
+    el.style.left = event.clientX + 'px';
+    el.style.top = event.clientY + 'px';
+    el.style.opacity = '1';
+    el.style.transform = 'scale(1)';
     setTimeout(() => {
-      ring.style.opacity = '0';
-      ring.style.transform = 'scale(.3)';
+      el.style.opacity = '0';
+      el.style.transform = 'scale(.3)';
     }, 320);
   }, true);
 

@@ -1,18 +1,13 @@
-import { appendFileSync, mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { homedir } from 'node:os';
 
 const DATA_DIR = process.env.LCU_DATA_DIR || join(homedir(), '.linux-computer-use');
 const AUDIT_FILE = join(DATA_DIR, 'audit.log');
+const LEASE_FILE = join(DATA_DIR, 'lease');
 
-/**
- * Control lease. Only one party drives the browser at a time: the agent, or
- * the human who took over in the dashboard. Without this, both can act on the
- * same page and the agent ends up clicking refs that no longer mean anything.
- */
 const state = {
   mode: 'normal',
-  lease: 'agent',
   session: 'default',
   snapshots: new Map(),
   staleSnapshot: false,
@@ -26,16 +21,29 @@ export function setMode(mode) {
   return state.mode;
 }
 
-export function getLease() { return state.lease; }
-
-export function setLease(owner) {
-  if (owner !== 'agent' && owner !== 'human') throw new Error(`unknown lease owner: ${owner}`);
-  // Handing control back to the agent invalidates every ref it captured
-  // before, because the human may have navigated or changed the page.
-  if (state.lease === 'human' && owner === 'agent') state.staleSnapshot = true;
-  state.lease = owner;
-  return state.lease;
+/**
+ * Control lease. Exactly one party drives at a time.
+ *
+ * It lives in a file rather than in memory on purpose. An agent that could
+ * hand control back to itself would make the whole thing decorative, and the
+ * agent reaches this process only through the browser tools - it has no shell.
+ * So releasing means touching the filesystem, which only the human can do.
+ */
+export function getLease() {
+  return existsSync(LEASE_FILE) ? 'human' : 'agent';
 }
+
+/** Hand control to the human. There is deliberately no way back through MCP. */
+export function takeOver() {
+  mkdirSync(DATA_DIR, { recursive: true });
+  writeFileSync(LEASE_FILE, `human since ${new Date().toISOString()}\n`, { mode: 0o600 });
+  state.staleSnapshot = true;
+  return 'human';
+}
+
+// Releasing is deliberately not implemented here: the human deletes the file
+// themselves, which is precisely what keeps it out of the agent's reach.
+export const leasePath = LEASE_FILE;
 
 export function getSession() { return state.session; }
 export function setSession(name) { state.session = name || 'default'; return state.session; }
@@ -55,6 +63,9 @@ export function markSnapshotStale() { state.staleSnapshot = true; }
 /**
  * Look up the accessible name a snapshot recorded for a ref, so guardrails can
  * reason about what an element actually says before it gets clicked.
+ *
+ * Returns null when the name cannot be established. Callers must treat that as
+ * a refusal, never as permission.
  */
 export function describeRef(session, ref) {
   // Refs are e12 in the main frame and f3e12 inside a frame. Matching only the
@@ -69,15 +80,28 @@ export function describeRef(session, ref) {
   return line.trim().replace(/^-\s*/, '').replace(/\s*\[ref=(f\d+)?e\d+\].*$/, '');
 }
 
+/** Keep only the origin of a URL: paths carry magic-link and reset tokens. */
+export function safeUrl(url) {
+  try { return new URL(String(url)).origin; } catch { return '(unparseable url)'; }
+}
+
 /**
- * Append one audit entry. Field values are never written: only their length,
- * so a password typed into a form can never end up in the log.
+ * Append one audit entry. Field values and keystrokes are never written, only
+ * counts, so a typed password cannot be reconstructed from this file.
  */
+let permsChecked = false;
+
 export function audit(entry) {
   const line = JSON.stringify({ at: new Date().toISOString(), ...entry });
   try {
-    mkdirSync(dirname(AUDIT_FILE), { recursive: true });
+    mkdirSync(DATA_DIR, { recursive: true });
     appendFileSync(AUDIT_FILE, line + '\n');
+    // Once per run, including for a log created by an earlier version that
+    // left it world readable.
+    if (!permsChecked) {
+      chmodSync(AUDIT_FILE, 0o600);
+      permsChecked = true;
+    }
   } catch {
     // auditing must never break a run
   }
