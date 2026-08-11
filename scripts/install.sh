@@ -55,6 +55,27 @@ else
   say "      install your distribution's Chromium dependencies (nss, cups, gbm, alsa, atk, xkbcommon, X11)."
 fi
 
+# --- optional desktop backend ------------------------------------------------
+# Only needed to drive native applications. The browser backend works without
+# any of it, so a missing tool is reported and never fatal.
+MISSING=""
+for tool in Xephyr xdotool import; do
+  command -v "$tool" >/dev/null 2>&1 || MISSING="$MISSING $tool"
+done
+command -v xfwm4 >/dev/null 2>&1 || command -v openbox >/dev/null 2>&1 \
+  || command -v fluxbox >/dev/null 2>&1 || MISSING="$MISSING window-manager"
+
+if [ -n "$MISSING" ]; then
+  say ""
+  say "Driving native applications additionally needs:$MISSING"
+  if command -v apt-get >/dev/null 2>&1; then
+    say "  sudo apt install xserver-xephyr xdotool imagemagick xfwm4"
+  else
+    say "  install your distribution's packages for Xephyr, xdotool, ImageMagick and a window manager"
+  fi
+  say "Driving a browser works without them."
+fi
+
 # --- done -------------------------------------------------------------------
 ENTRY="$APP_DIR/src/index.js"
 [ -f "$ENTRY" ] || fail "install looks incomplete, $ENTRY is missing."
