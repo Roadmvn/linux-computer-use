@@ -1,6 +1,6 @@
 # linux-computer-use
 
-> linux-computer-use is an open source computer use agent for Linux. It is an MCP server that lets an AI agent such as Claude Code or OpenAI Codex drive a real browser on your own Linux machine, with a live view, human takeover, and safety guardrails.
+> linux-computer-use is an open source computer use agent for Linux. It is an MCP server that lets an AI agent such as Claude Code or OpenAI Codex drive a real browser, and native Linux applications, on your own Linux machine, with a live view, human takeover, and safety guardrails.
 
 Computer use and browser automation for AI agents landed first on macOS and Windows, or inside a cloud VM. This project brings the same capability to Linux, self-hosted, running locally on your machine with your own browser and your own cookies.
 
@@ -19,6 +19,7 @@ That is the whole setup. The script is [scripts/install.sh](scripts/install.sh) 
 - [Connect it to your agent](#connect-it-to-your-agent)
 - [First run](#first-run)
 - [Use your own browser](#use-your-own-browser)
+- [Drive native applications](#drive-native-applications)
 - [Features](#features)
 - [MCP tools](#mcp-tools)
 - [How it works](#how-it-works)
@@ -30,7 +31,7 @@ That is the whole setup. The script is [scripts/install.sh](scripts/install.sh) 
 
 ## What is linux-computer-use
 
-It is a Model Context Protocol (MCP) server, written in Node.js, that exposes browser control as 13 tools. Any MCP client can call them: Claude Code, OpenAI Codex, or your own agent. The agent opens a session, navigates, reads the page, clicks, types, and switches tabs, on a browser that runs on your Linux desktop and that you can watch in real time.
+It is a Model Context Protocol (MCP) server, written in Node.js, that exposes 21 tools: 13 for the browser and 8 for native applications. Any MCP client can call them: Claude Code, OpenAI Codex, or your own agent. The agent opens a session, navigates, reads the page, clicks, types, and switches tabs, on a browser that runs on your Linux desktop and that you can watch in real time. It also drives native applications such as Burp Suite or Wireshark, in a nested desktop of its own, see [Drive native applications](#drive-native-applications).
 
 Two things make it usable for real work instead of demos:
 
@@ -46,6 +47,7 @@ It launches the bundled Chromium, your installed Chrome, Edge, Firefox or WebKit
 - A graphical session. The browser opens a real window, so `DISPLAY` or `WAYLAND_DISPLAY` must be set in the environment of the MCP client that starts the server. When neither is set, `open` returns a plain message saying so instead of a stack trace. On a machine with no screen, wrap the client in `xvfb-run`.
 - System libraries for the bundled browser. The installer pulls them automatically on apt based systems. Elsewhere, install your distribution's Chromium dependencies yourself: nss, cups, gbm, alsa, atk, xkbcommon and X11.
 - A browser is optional. The installer downloads a bundled Chromium, which is what the `open` tool uses by default. `chrome` and `msedge` use the copy already installed on the machine. `firefox` and `webkit` need their Playwright builds first: `cd ~/.linux-computer-use/app && npx playwright install firefox`.
+- For the desktop backend only: Xephyr (package `xserver-xephyr` on Debian, Ubuntu and Kali), `xdotool`, ImageMagick for its `import` command, and a window manager, `xfwm4` or `openbox` or `fluxbox`. On apt systems that is `sudo apt install xserver-xephyr xdotool imagemagick xfwm4`. The installer checks for them and prints that line when one is missing; it does not install them for you. The nested desktop opens on your existing graphical session, so `DISPLAY` must be set. None of this is needed to drive a browser.
 
 ## Connect it to your agent
 
@@ -157,6 +159,73 @@ Other Chromium-based browsers follow the same shape under `~/.config/<browser>`.
 
 Warning: the agent inherits every session that profile carries. The profile is the security boundary, not the prompt you wrote. Keep a profile with nothing signed into it for targets you do not control. And for as long as the browser runs with a debugging port open, any local process can read those cookies through it, not only this server.
 
+## Drive native applications
+
+A browser is not the whole machine. The desktop backend lets the agent work in Burp Suite, Wireshark, Ghidra, a file manager or any other application installed on your system, without taking your mouse away from you.
+
+It needs the packages listed in [Requirements](#requirements). The browser backend is unaffected if they are missing.
+
+### The agent gets a desktop of its own
+
+`desktop_start` opens a nested X display with Xephyr, inside a resizable window titled "agent desktop", and runs `xfwm4` in it as the window manager. The default size is 1280x800. Everything the agent launches lives in that window. You can minimise it and carry on working: its pointer, its focus and its window stack are separate from yours.
+
+The window is deliberately unobtrusive. When it is created it hands the keyboard straight back to whatever you were using, so it never interrupts you mid-sentence, and it is started with `-no-host-grab` so passing the mouse over it does not capture your keyboard and pointer. It comes to the front when you click it, and not before.
+
+That is not a stylistic preference. Two limits of X11 were measured before settling on it:
+
+1. On a shared display, `xdotool` drives the single core pointer. The agent would take the mouse out of your hand for as long as it works, and you could not use the machine in the meantime.
+2. Sending input to a window in the background does not work. The `--window` option of `xdotool` goes through `XSendEvent`, and modern toolkits, Chromium, Java/Swing and Electron among them, ignore those synthetic events on purpose. In testing, neither the keystrokes nor the clicks were received, and the window stole the focus on the way.
+
+A nested display is therefore the only arrangement where the agent works while you keep using your machine.
+
+### Applications keep their configuration
+
+Application configuration lives on disk per user, not per display. Burp Suite started on the agent desktop reads the same settings, extensions and CA certificate as the one you start yourself, from `~/.java/.userPrefs/burp`, and the system VPN applies to it like to any other process. There is no second environment to set up.
+
+### The desktop survives a server restart
+
+Xephyr is started detached, and the display number and the pids are written to `~/.linux-computer-use/desktop.json`. So when your MCP client restarts the server, `desktop_start` reattaches to the desktop already running, with the applications still open inside it, instead of opening a second one and abandoning the first.
+
+### Desktop tools
+
+| Tool | What it does | Parameters |
+| --- | --- | --- |
+| `desktop_start` | Start the agent desktop, or shut it down. Required before any other desktop tool | `width`, `height`, `stop` |
+| `desktop_windows` | List the visible windows, with id, title, class and geometry | - |
+| `desktop_focus` | Bring a window to the front | `id` |
+| `desktop_screenshot` | Capture the whole desktop, or a single window | `window` |
+| `desktop_click` | Move the pointer and click | `x`, `y`, `button`, `move_only` |
+| `desktop_type` | Type text into the focused window | `text`, `confirm` |
+| `desktop_key` | Press a key or a combination, for example `Return`, `ctrl+c` or `alt+Tab` | `key`, `confirm` |
+| `desktop_launch` | Start an application, found by name in the desktop catalog | `app`, `confirm` |
+
+### Example
+
+Asking in words is enough:
+
+```
+Start the agent desktop, open Burp Suite in it, and describe what you see.
+```
+
+The agent calls `desktop_start`, and a window opens on your screen. Then `desktop_launch` with `burp`, matched against the `.desktop` catalog in `/usr/share/applications`, `/usr/local/share/applications` and `~/.local/share/applications`. Applications take a few seconds to map their window, so `desktop_windows` comes next, then `desktop_screenshot` to read the interface. From there the agent works from coordinates with `desktop_click`, `desktop_type` and `desktop_key`.
+
+### Guardrails on this path
+
+- Application allowlist. By default `burpsuite`, `wireshark`, `firefox`, `firefox-esr`, `chromium`, `zaproxy`, `ghidra`, `cutter`, `gedit`, `mousepad`, `thunar`. Anything outside it needs `confirm: true`. Replace the list with `LCU_APPS`, comma separated.
+- Terminal detection. When the focused window belongs to a terminal class, `xterm`, `konsole`, `alacritty`, `kitty`, `tilix`, `urxvt`, `wezterm` and the like, `desktop_type` and `desktop_key` are refused until the call is repeated with `confirm: true`, because a shell acts on whatever it receives.
+- The control lease covers these tools as well. While `~/.linux-computer-use/lease` exists, every desktop call is refused, exactly like the browser calls. See [Human takeover](#human-takeover).
+- The audit log records the call: the tool, the coordinates of a click, the application launched, and for `desktop_type` the number of characters. The text typed and the key pressed are never written.
+
+### What the desktop path does not protect you from
+
+On the desktop, the agent clicks blind. This is worth reading before you point it at something that matters.
+
+The browser path has an accessibility tree. The server can read that a button is named "Delete account" and refuse the click. On the desktop there are only pixels, so no check by element name is possible at all: nothing distinguishes an OK button from a "Delete everything" button.
+
+Concretely, the credential guard, the irreversible-action guard, the account-choice guard and the refusal on unidentifiable targets do not apply to `desktop_click`, `desktop_type` and `desktop_key`. What remains is the application allowlist, terminal detection and the lease.
+
+The desktop path therefore offers weaker guarantees than the browser path. That is a deliberate trade-off, not an oversight: the alternative was shipping no desktop backend at all. Give it applications you would accept seeing clicked around in, keep the "agent desktop" window somewhere you can see it, and take the lease when you want it to stop. Checks by element name are on the [Roadmap](#roadmap), through AT-SPI.
+
 ## Features
 
 ### Live view in a dashboard
@@ -244,6 +313,8 @@ Both modes stop hard on: entering a credential, submitting a login form whose pa
 
 `browser` accepts `chromium`, the default and the bundled build, plus `chrome`, `firefox`, `webkit` and `msedge`. Brave, Opera and Vivaldi are not values here: reach them with `cdp`, as described in [Use your own browser](#use-your-own-browser). `browser` and `profile` are both ignored when `cdp` is set.
 
+The eight tools of the desktop backend are listed in [Desktop tools](#desktop-tools), which brings the total to 21.
+
 ### Environment variables
 
 | Variable | What it does |
@@ -251,6 +322,7 @@ Both modes stop hard on: entering a credential, submitting a login form whose pa
 | `LCU_HOME` | Where the installer puts the server. Defaults to `~/.linux-computer-use`. |
 | `LCU_DATA_DIR` | Where the lease file and the audit log are written. Defaults to `~/.linux-computer-use`. |
 | `LCU_IRREVERSIBLE` | Replaces the list of verbs treated as irreversible, comma separated. |
+| `LCU_APPS` | Replaces the list of applications `desktop_launch` may start without `confirm`, comma separated. |
 | `LCU_PLAYWRIGHT_CLI` | Path to an alternative `playwright-cli`, used instead of the bundled one. |
 
 ## How it works
@@ -263,6 +335,7 @@ What this project adds on top:
 - a control lease held in a file, so the agent and the human are never driving at the same time and the agent cannot take control back on its own
 - an audit trail of what the agent did
 - the visible cursor overlay
+- the desktop backend, which does not go through Playwright at all: a nested X display served by Xephyr, input through `xdotool`, capture through the `import` command of ImageMagick
 
 Everything runs on your machine. There is no cloud VM in the loop and no browser session hosted by a third party.
 
@@ -285,7 +358,7 @@ Yes. Install this MCP server, register it with Claude Code, OpenAI Codex, or any
 
 ### Does computer use work on Linux?
 
-The mainstream computer use products target macOS and Windows or run the browser in a cloud VM. On Linux, this project gives you the equivalent locally, limited to the browser.
+The mainstream computer use products target macOS and Windows or run the browser in a cloud VM. On Linux, this project gives you the equivalent locally, for the browser and for native applications.
 
 ### What is the Linux alternative to OpenAI Operator?
 
@@ -293,7 +366,7 @@ linux-computer-use. Operator runs a browser in a cloud VM you reach through Chat
 
 ### How do I give Claude Code browser access?
 
-Run the installer, then `claude mcp add --scope user linux-computer-use -- node ~/.linux-computer-use/app/src/index.js`, and ask Claude Code to open a page. The 13 tools show up in its tool list.
+Run the installer, then `claude mcp add --scope user linux-computer-use -- node ~/.linux-computer-use/app/src/index.js`, and ask Claude Code to open a page. The 21 tools show up in its tool list.
 
 ### Does it work with OpenAI Codex?
 
@@ -319,6 +392,10 @@ No. It stops on an empty login form, and it asks you when several accounts are o
 
 The `browser` parameter launches `chromium`, the bundled default, or `chrome`, `firefox`, `webkit` and `msedge`. Brave, Opera and Vivaldi cannot be named there. Start them yourself with `--remote-debugging-port` and attach with `cdp`, which is also how you reuse a profile you are already logged into.
 
+### Can it drive native Linux applications, not just a browser?
+
+Yes. `desktop_start` opens a nested X display for the agent, and it drives applications in there with `desktop_launch`, `desktop_click`, `desktop_type` and `desktop_key`. Your own pointer and focus are untouched, so you keep using the machine while it works. Read [What the desktop path does not protect you from](#what-the-desktop-path-does-not-protect-you-from) first: on the desktop the agent works from pixels, so the guardrails are much thinner than on the browser path.
+
 ### Is my browsing sent to a cloud service?
 
 No. The server, the browser, and the dashboard all run on your machine.
@@ -329,7 +406,7 @@ The browser drivers, the named sessions and the live view come from playwright-c
 
 ## Roadmap
 
-- an X11 desktop backend, to drive native Linux applications and not only the browser. Planned, not available yet.
+- AT-SPI integration, the Linux accessibility bus, to give the desktop backend the equivalent of the browser's accessibility snapshot, and with it real guardrails by element name. Planned, not available yet.
 
 ## Contributing
 

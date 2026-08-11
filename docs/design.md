@@ -84,11 +84,16 @@ Claude Code / OpenAI Codex / any MCP client
    |- state    lease, mode, snapshot cache, audit
    |- cursor   overlay injected into the page
    |- runner   spawns playwright-cli, argv only, never a shell string
+   |- desktop  nested X display, allowlist, terminal detection
       |
       v
   playwright-cli -s=<session>  ->  Chromium, Chrome, Firefox, or any
       |                             Chromium-based browser over CDP
       +- playwright-cli show   ->  live view and human takeover
+
+  Xephyr :20+ (agent desktop)  ->  native applications, xfwm4 inside
+      +- xdotool               ->  pointer and keyboard of that display
+      +- import                ->  capture of that display
 ```
 
 The broker is an MCP server rather than a CLI wrapper on purpose. A wrapper can
@@ -130,6 +135,82 @@ Two ways to act, both available:
 
 Neither is sufficient alone, which is why both are exposed.
 
+## Desktop backend
+
+The browser is not the whole machine, so a second backend drives native
+applications: Xephyr for the display, `xdotool` for input, the `import` command
+of ImageMagick for capture, `xfwm4` inside for window management. It does not go
+through Playwright at all.
+
+### Why a nested display and not the one you are looking at
+
+The obvious design is to drive the applications already open on the user's
+display. It was tried, and X11 says no twice.
+
+1. **One pointer.** On a shared display `xdotool` moves the single core pointer.
+   The agent would take the mouse out of the user's hand for the whole run, and
+   the user could do nothing while it works. A computer-use agent that requires
+   the human to stop using the computer is not much of a computer-use agent.
+2. **Background windows do not receive synthetic input.** The `--window` option
+   of `xdotool` sends events with `XSendEvent`, and modern toolkits - Chromium,
+   Java/Swing, Electron - ignore synthetic events on purpose, since accepting
+   them would let any local process type into any window. Measured: neither the
+   keystrokes nor the clicks arrived, and the targeted window stole the focus in
+   the process, so the failure was not even quiet.
+
+A nested display is what is left, and it is a better answer than a workaround:
+the agent gets its own pointer, its own focus and its own window stack, in a
+resizable window titled "agent desktop" that the user can minimise. Display
+numbers start at `:20` and the first free one is taken, so several machines and
+several sessions do not collide. Default size 1280x800.
+
+### Applications keep their configuration
+
+Configuration lives on disk per user, not per display, so nothing has to be
+duplicated for the nested desktop. Burp Suite launched there reads the same
+`~/.java/.userPrefs/burp` as the one the user launches, with the same
+extensions and the same CA certificate, and the system VPN applies to it like to
+any other process. This is what makes the backend useful for real work rather
+than for demos: the tools arrive already configured.
+
+### The desktop outlives the server
+
+Xephyr is spawned detached, and the display number and pids are written to
+`~/.linux-computer-use/desktop.json`. MCP clients restart their servers freely,
+and holding the display number in memory only meant a restart opened a second
+desktop and abandoned the first with the applications still inside it.
+`desktop_start` now checks whether the recorded display still answers, through
+`xdpyinfo`, and reattaches to it.
+
+### Guarantees are weaker here, deliberately
+
+The browser path can reason about what it is about to touch: the accessibility
+tree names the element, so a click on "Delete account" is refused and a
+credential field is never filled. The desktop path has pixels and nothing else.
+Nothing distinguishes an OK button from a "Delete everything" button, so no
+check by element name is possible at all - not weakly implemented, absent.
+
+What holds on this path:
+
+- an allowlist of applications `desktop_launch` may start without `confirm`,
+  replaceable through `LCU_APPS`
+- terminal detection: when the focused window is of a terminal class,
+  `desktop_type` and `desktop_key` demand `confirm`, because a shell runs
+  whatever reaches it
+- the control lease, which covers every `desktop_` tool exactly as it covers the
+  browser tools
+- the audit log, which records the call and its coordinates but never the text
+  typed or the key pressed, `desktop_type` being reduced to a character count
+
+What does not: the credential guard, the irreversible-action guard, the account
+chooser and the refusal on unidentifiable targets. They all need a name for the
+target, and there is none.
+
+This is a trade-off taken with open eyes, not an oversight. The alternative was
+to ship no desktop backend, and a documented weaker path is more useful than an
+absent one - provided the weakness is written down where users read it, which is
+why it is also in the README rather than only here.
+
 ## Known limits
 
 - Guardrail detection is heuristic. Names are matched on word boundaries
@@ -139,12 +220,20 @@ Neither is sufficient alone, which is why both are exposed.
 - The control lease is explicit, not observed. The broker cannot see a takeover
   happen in the dashboard, so a human who wants to stop the agent without
   waiting for it to offer has to create the lease file themselves.
-- The browser is driven, not the desktop. Native windows, file pickers and
-  desktop applications are out of reach for now.
+- The desktop backend acts on pixels. No guardrail by element name applies
+  there, so the application allowlist, terminal detection and the lease are the
+  whole protection. See the section above.
+- The desktop backend only knows the applications it started, or that a human
+  started on the nested display. Windows already open on the user's own display
+  are out of reach, which is the price of not sharing a pointer with them.
+- It is X11 on both sides. `desktop_start` refuses when `DISPLAY` is unset,
+  since the nested desktop is a window that has to be put somewhere, and the
+  applications inside it run as X clients. On a Wayland session that means
+  XWayland.
 
 ## Roadmap
 
-An X11 desktop backend, so native application windows can be captured and
-driven alongside the browser. Window capture and input injection were both
-verified to work on X11 before this was written down; only the integration
-remains.
+AT-SPI integration, the Linux accessibility bus, to give the desktop backend the
+equivalent of the browser's accessibility snapshot: element names and roles
+instead of pixels, and with them real guardrails by name on the desktop path.
+Planned, not available yet.

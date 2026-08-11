@@ -2,12 +2,12 @@
 
 > An open source computer use agent for Linux: an MCP server that lets Claude Code, OpenAI Codex, or any MCP client drive a real browser on your own Linux machine, with a live view, human takeover, and safety guardrails.
 
-Self-hosted browser automation for AI agents on Linux, an alternative to cloud-hosted computer use products. Node.js MCP server wrapping playwright-cli. Launches the bundled Chromium, or Chrome, Firefox, WebKit and Edge, and attaches over CDP to any Chromium-based browser you started yourself (Brave, Opera, Vivaldi). Requires Linux, Node.js 20+, and a graphical session (DISPLAY or WAYLAND_DISPLAY). Licensed MIT. Owner: Roadmvn.
+Self-hosted browser automation for AI agents on Linux, an alternative to cloud-hosted computer use products. Node.js MCP server wrapping playwright-cli. Launches the bundled Chromium, or Chrome, Firefox, WebKit and Edge, and attaches over CDP to any Chromium-based browser you started yourself (Brave, Opera, Vivaldi). It also drives native Linux applications (Burp Suite, Wireshark, Ghidra) in a nested X desktop of its own, which needs Xephyr, xdotool, ImageMagick and a window manager. Requires Linux, Node.js 20+, and a graphical session (DISPLAY or WAYLAND_DISPLAY). Licensed MIT. Owner: Roadmvn.
 
 ## Docs
 
 - [README](https://github.com/Roadmvn/linux-computer-use/blob/main/README.md): what it is, install, use your own browser, tool reference, comparison with other computer use agents, FAQ
-- [Design notes](https://github.com/Roadmvn/linux-computer-use/blob/main/docs/design.md): architecture, control lease between agent and human, guardrails, audit trail
+- [Design notes](https://github.com/Roadmvn/linux-computer-use/blob/main/docs/design.md): architecture, control lease between agent and human, guardrails, audit trail, desktop backend and why it uses a nested X display
 - [Repository](https://github.com/Roadmvn/linux-computer-use): source, issues, releases
 
 ## Install
@@ -37,6 +37,17 @@ The installer places the server in `~/.linux-computer-use/app` and prints these:
 - `status`: session and control lease state, hands control to the human (takeover)
 - `set_mode`: switch between normal and auto mode (mode)
 
+Desktop backend, native applications in a nested X display:
+
+- `desktop_start`: start the agent desktop, required before the other desktop tools (width, height, stop)
+- `desktop_windows`: list the visible windows with id, title, class and geometry
+- `desktop_focus`: bring a window to the front (id)
+- `desktop_screenshot`: capture the desktop, or a single window (window)
+- `desktop_click`: move the pointer and click (x, y, button, move_only)
+- `desktop_type`: type text into the focused window (text, confirm)
+- `desktop_key`: press a key or combination, e.g. Return, ctrl+c, alt+Tab (key, confirm)
+- `desktop_launch`: start an application from the desktop catalog (app, confirm)
+
 ## Features
 
 - live view: run `npx playwright-cli show` yourself for a window on this machine, or `npx playwright-cli show --port=7777 --host=0.0.0.0` to reach it from another machine. The server never starts it
@@ -48,6 +59,9 @@ The installer places the server in `~/.linux-computer-use/app` and prints these:
 - guardrails fail closed: no credential entry, stops on empty login forms and account choices, confirms irreversible actions, refuses when the target or the page cannot be read
 - audit log of counters only, never field values or keys, URLs reduced to their origin
 - normal mode confirms before committing a form, auto mode does not, both stop on credentials and irreversible actions
+- native applications in a nested X display (Xephyr from :20, xfwm4, 1280x800 by default), so the agent never takes the pointer or the focus from the human: on a shared display xdotool drives the single core pointer, and input sent to a background window through XSendEvent is ignored by modern toolkits
+- applications keep their per-user configuration, so Burp Suite started there has the same settings, extensions and CA as usual; the desktop is detached and its display is recorded in `~/.linux-computer-use/desktop.json`, so a server restart reattaches instead of opening a second one
+- desktop guardrails are thinner by design: allowlist of applications (`LCU_APPS`), confirm required when a terminal has focus, and the same lease, but no check by element name because there is no accessibility tree, only pixels. AT-SPI is on the roadmap
 
 ## Related
 
