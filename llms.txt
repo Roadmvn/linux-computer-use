@@ -6,7 +6,8 @@ Self-hosted browser automation for AI agents on Linux, an alternative to cloud-h
 
 ## Docs
 
-- [README](https://github.com/Roadmvn/linux-computer-use/blob/main/README.md): what it is, install, use your own browser, tool reference, comparison with other computer use agents, FAQ
+- [README](https://github.com/Roadmvn/linux-computer-use/blob/main/README.md): what it is, install, connect it to an agent, tool reference, requirements, comparison with other computer use agents, FAQ
+- [Usage guide](https://github.com/Roadmvn/linux-computer-use/blob/main/docs/usage.md): first run, live view, human takeover, guardrails and modes, using your own browser over CDP, driving native applications, environment variables, audit trail
 - [Design notes](https://github.com/Roadmvn/linux-computer-use/blob/main/docs/design.md): architecture, control lease between agent and human, guardrails, audit trail, desktop backend and why it uses a nested X display
 - [Repository](https://github.com/Roadmvn/linux-computer-use): source, issues, releases
 
