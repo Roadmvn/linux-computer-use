@@ -13,12 +13,24 @@
 function overlay() {
   const doc = document;
   const root = doc.documentElement;
-  const CURSOR_ID = '__lcu_cursor';
-  const RING_ID = '__lcu_click';
 
-  for (const id of [CURSOR_ID, RING_ID]) {
-    const previous = doc.getElementById(id);
-    if (previous) previous.remove();
+  /**
+   * Bumped whenever the listeners change behaviour.
+   *
+   * Listeners cannot be removed once bound - nothing here holds a reference to
+   * them - so a page loaded by an older version keeps its old ones for as long
+   * as it lives. Putting the version in the element ids makes those old
+   * listeners harmless: they look for ids that no longer exist and do nothing,
+   * while the current ones drive the elements they created. Without this, a
+   * page open across an upgrade kept following the human's mouse.
+   */
+  const VERSION = 2;
+  const CURSOR_ID = `__lcu_cursor_v${VERSION}`;
+  const RING_ID = `__lcu_click_v${VERSION}`;
+
+  // Anything an earlier version left on the page, including its own overlay.
+  for (const el of doc.querySelectorAll('[id^="__lcu_cursor"],[id^="__lcu_click"]')) {
+    el.remove();
   }
 
   const svgNs = 'http://www.w3.org/2000/svg';
@@ -65,10 +77,11 @@ function overlay() {
   window.__lcuArm = (ms) => { window.__lcuArmedUntil = Date.now() + (ms || 3000); };
   const armed = () => Date.now() < (window.__lcuArmedUntil || 0);
 
-  // Injected after every action, so bind the listeners once per document:
-  // otherwise each injection stacks another pair on the same page.
-  if (window.__lcuBound) return 'lcu-cursor-ready';
-  window.__lcuBound = true;
+  // Injected after every action, so bind once per document and per version:
+  // otherwise each injection stacks another pair on the same page, and a page
+  // that survived an upgrade never gets the new behaviour.
+  if (window.__lcuBound === VERSION) return 'lcu-cursor-ready';
+  window.__lcuBound = VERSION;
 
   addEventListener('mousemove', (event) => {
     const el = document.getElementById(CURSOR_ID);
