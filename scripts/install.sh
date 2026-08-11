@@ -40,8 +40,20 @@ say "installing dependencies"
 ( cd "$APP_DIR" && npm install --omit=dev --silent --no-fund --no-audit )
 
 say "installing the bundled browser"
-( cd "$APP_DIR" && npx --yes playwright install chromium >/dev/null 2>&1 ) \
-  || say "warning: browser download failed. Run 'npx playwright install chromium' in $APP_DIR"
+if ! ( cd "$APP_DIR" && npx --yes playwright install chromium ); then
+  fail "browser download failed. Fix the error above, then run: cd $APP_DIR && npx playwright install chromium"
+fi
+
+# The bundled browser needs system libraries. install-deps only knows apt, so
+# elsewhere the user installs them from their own package manager.
+if command -v apt-get >/dev/null 2>&1; then
+  say "installing system libraries (may ask for your password)"
+  ( cd "$APP_DIR" && npx --yes playwright install-deps chromium ) \
+    || say "warning: could not install system libraries automatically. If the browser fails to start, run: cd $APP_DIR && sudo npx playwright install-deps chromium"
+else
+  say "note: not an apt system. If the browser fails to start with a missing library,"
+  say "      install your distribution's Chromium dependencies (nss, cups, gbm, alsa, atk, xkbcommon, X11)."
+fi
 
 # --- done -------------------------------------------------------------------
 ENTRY="$APP_DIR/src/index.js"
@@ -56,7 +68,15 @@ say "  claude mcp add --scope user linux-computer-use -- node $ENTRY"
 say "  codex mcp add linux-computer-use -- node $ENTRY"
 say ""
 say "Then restart your client and ask it to open a page."
-say "Live view and human takeover:"
+say ""
+say "Live view and human takeover, on this machine:"
 say ""
 say "  cd $APP_DIR && npx playwright-cli show"
+say ""
+say "To watch from another machine instead, serve it and open the printed URL:"
+say ""
+say "  cd $APP_DIR && npx playwright-cli show --port=7777 --host=0.0.0.0"
+say ""
+say "  Anyone who can reach that port can drive your browser. Bind it to a"
+say "  private interface or a VPN address rather than 0.0.0.0 when you can."
 say ""
