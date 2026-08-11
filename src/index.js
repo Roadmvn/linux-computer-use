@@ -10,6 +10,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { displayProblem, evaluate, run } from './runner.js';
 import { CURSOR_SOURCE } from './cursor.js';
 import { check } from './policy.js';
+import * as desktop from './desktop.js';
 import {
   audit, auditPath, getLease, getMode, getSession, leasePath,
   markSnapshotStale, rememberSnapshot, safeUrl, setMode, setSession, takeOver,
@@ -145,6 +146,93 @@ const TOOLS = [
       required: ['mode'],
     },
   },
+
+  // Desktop backend. The agent gets a nested X display of its own, so it can
+  // drive native applications without taking the mouse away from the human.
+  {
+    name: 'desktop_start',
+    description: 'Start the agent desktop, a nested X display in a resizable window. Required before any other desktop tool. Pass stop: true to shut it down.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        width: { type: 'number', description: 'Defaults to 1280.' },
+        height: { type: 'number', description: 'Defaults to 800.' },
+        stop: { type: 'boolean', description: 'Shut the desktop down instead of starting it.' },
+      },
+    },
+  },
+  {
+    name: 'desktop_windows',
+    description: 'List the visible windows on the agent desktop, with id, title, class and geometry.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'desktop_focus',
+    description: 'Bring a window of the agent desktop to the front. Keyboard input goes to the focused window.',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'string', description: 'Window id from desktop_windows.' } },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'desktop_screenshot',
+    description: 'Capture the agent desktop, or a single window of it. Use it to find coordinates before clicking.',
+    inputSchema: {
+      type: 'object',
+      properties: { window: { type: 'string', description: 'Window id. Omit for the whole desktop.' } },
+    },
+  },
+  {
+    name: 'desktop_click',
+    description: 'Move the pointer of the agent desktop and click. Coordinates come from desktop_screenshot.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        x: { type: 'number' },
+        y: { type: 'number' },
+        button: { type: 'number', description: '1 left, 2 middle, 3 right. Defaults to 1.' },
+        move_only: { type: 'boolean', description: 'Move the pointer without clicking.' },
+      },
+      required: ['x', 'y'],
+    },
+  },
+  {
+    name: 'desktop_type',
+    description: 'Type text into the focused window of the agent desktop. Typing into a terminal needs confirm, because a shell runs whatever it receives.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string' },
+        confirm: { type: 'boolean', description: 'Required when a terminal has focus, after the human approved.' },
+      },
+      required: ['text'],
+    },
+  },
+  {
+    name: 'desktop_key',
+    description: 'Press a key or combination on the agent desktop, for example Return, ctrl+c or alt+Tab.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        key: { type: 'string' },
+        confirm: { type: 'boolean', description: 'Required when a terminal has focus.' },
+      },
+      required: ['key'],
+    },
+  },
+  {
+    name: 'desktop_launch',
+    description: 'Start an application on the agent desktop, found by name in the desktop catalog. Applications outside the allowed list need confirm.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        app: { type: 'string', description: 'Name or part of it, for example burp or wireshark.' },
+        confirm: { type: 'boolean', description: 'Required for an application outside the allowed list.' },
+      },
+      required: ['app'],
+    },
+  },
 ];
 
 const text = (value) => ({ content: [{ type: 'text', text: value }] });
@@ -166,6 +254,16 @@ async function armCursor(session) {
 
 async function handle(name, args) {
   const session = args.session || getSession();
+
+  if (name.startsWith('desktop_')) {
+    if (getLease() === 'human') {
+      audit({ tool: name, blocked: 'human_has_control' });
+      return text(`BLOCKED (human_has_control)\n\nThe human is driving. Control returns when they delete ${leasePath}.`);
+    }
+    if (name !== 'desktop_start' && !desktop.isRunning()) {
+      return text('The agent desktop is not running. Call desktop_start first.');
+    }
+  }
 
   const verdict = await check(name, args, session);
   if (!verdict.allowed) {
@@ -326,6 +424,80 @@ async function handle(name, args) {
       const mode = setMode(args.mode);
       audit({ tool: 'set_mode', mode });
       return text(`mode: ${mode}`);
+    }
+
+    case 'desktop_start': {
+      if (args.stop) {
+        const stopped = desktop.stop();
+        audit({ tool: 'desktop_start', stopped: true });
+        return text(JSON.stringify(stopped, null, 2));
+      }
+      const started = desktop.start({ width: args.width, height: args.height });
+      audit({ tool: 'desktop_start', display: started.display, ok: started.ok });
+      if (!started.ok) return text(`COULD NOT START THE DESKTOP\n\n${started.error}`);
+      return text(JSON.stringify({
+        ...started,
+        allowedApps: desktop.allowedApps,
+        note: started.note
+          ? 'Reattached to the desktop that was already running, with everything still open in it.'
+          : 'A window titled "agent desktop" opened on your screen. You can minimise it; the agent keeps working. Its pointer and focus are separate from yours.',
+      }, null, 2));
+    }
+
+    case 'desktop_windows':
+      return text(JSON.stringify(desktop.listWindows(), null, 2));
+
+    case 'desktop_focus': {
+      const r = desktop.focusWindow(args.id);
+      audit({ tool: 'desktop_focus', id: args.id });
+      return text(r.ok ? `focused ${args.id}` : `could not focus ${args.id}: ${r.error}`);
+    }
+
+    case 'desktop_screenshot': {
+      const file = join(tmpdir(), `lcu-desk-${Date.now()}.png`);
+      const r = desktop.capture(file, args.window);
+      audit({ tool: 'desktop_screenshot', window: args.window });
+      if (!r.ok) return text(`capture failed: ${r.error}`);
+      try {
+        const data = readFileSync(file).toString('base64');
+        unlinkSync(file);
+        return { content: [{ type: 'image', data, mimeType: 'image/png' }] };
+      } catch (error) {
+        return text(`capture unreadable: ${error.message}`);
+      }
+    }
+
+    case 'desktop_click': {
+      const r = args.move_only
+        ? desktop.move(args.x, args.y)
+        : desktop.click(args.x, args.y, args.button || 1);
+      audit({ tool: 'desktop_click', x: args.x, y: args.y, button: args.button || 1 });
+      return text(r.ok ? `${args.move_only ? 'moved to' : 'clicked'} ${args.x},${args.y}` : r.error);
+    }
+
+    case 'desktop_type':
+    case 'desktop_key': {
+      // A shell runs whatever reaches it, so a terminal is a checkpoint even
+      // though the agent already has the user's account on this path.
+      if (desktop.isTerminalFocused() && !args.confirm) {
+        return text(`BLOCKED (terminal_focused)\n\nA terminal window has focus (${desktop.focusedClass()}), and a shell acts on whatever it receives. Ask the human, then repeat the call with confirm: true.`);
+      }
+      const r = name === 'desktop_type' ? desktop.typeText(args.text) : desktop.key(args.key);
+      // Neither the text nor the key is written to the log.
+      audit({ tool: name, chars: name === 'desktop_type' ? String(args.text).length : undefined, confirmed: Boolean(args.confirm) });
+      return text(r.ok ? 'done' : r.error);
+    }
+
+    case 'desktop_launch': {
+      const matches = desktop.findApp(args.app);
+      if (!matches.length) return text(`No application matching "${args.app}" in the desktop catalog.`);
+      const app = matches.find((m) => desktop.isAllowed(m)) || matches[0];
+      if (!desktop.isAllowed(app) && !args.confirm) {
+        return text(`BLOCKED (app_not_allowed)\n\n"${app.name}" is outside the allowed list (${desktop.allowedApps.join(', ')}). Ask the human, then repeat with confirm: true, or set LCU_APPS.\n\nMatches: ${matches.slice(0, 5).map((m) => m.name).join(', ')}`);
+      }
+      const r = desktop.launch(app);
+      audit({ tool: 'desktop_launch', app: app.id, confirmed: Boolean(args.confirm) });
+      return text(`launched ${app.name}. Call desktop_windows in a moment: applications take a few seconds to map their window.`);
     }
 
     default:
