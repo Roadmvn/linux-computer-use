@@ -28,9 +28,15 @@ function overlay() {
   const CURSOR_ID = `__lcu_cursor_v${VERSION}`;
   const RING_ID = `__lcu_click_v${VERSION}`;
 
-  // Anything an earlier version left on the page, including its own overlay.
+  // Clear out what an earlier version left behind, but never the current
+  // overlay: this runs after every action, and recreating the pointer would
+  // snap it back to the middle of the page each time instead of leaving it
+  // where the agent last acted.
   for (const el of doc.querySelectorAll('[id^="__lcu_cursor"],[id^="__lcu_click"]')) {
-    el.remove();
+    if (el.id !== CURSOR_ID && el.id !== RING_ID) el.remove();
+  }
+  if (doc.getElementById(CURSOR_ID) && doc.getElementById(RING_ID)) {
+    return 'lcu-cursor-ready';
   }
 
   const svgNs = 'http://www.w3.org/2000/svg';
