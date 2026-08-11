@@ -1,0 +1,50 @@
+{
+  "name": "linux-computer-use",
+  "version": "0.1.0",
+  "description": "Computer use for Linux. Let Claude Code, OpenAI Codex or any MCP client drive a real browser on your Linux machine, with a live view, human takeover and guardrails.",
+  "keywords": [
+    "computer-use",
+    "linux",
+    "mcp",
+    "model-context-protocol",
+    "browser-automation",
+    "browser-agent",
+    "ai-agent",
+    "claude-code",
+    "codex",
+    "playwright",
+    "self-hosted"
+  ],
+  "license": "MIT",
+  "author": "Roadmvn",
+  "homepage": "https://github.com/Roadmvn/linux-computer-use",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Roadmvn/linux-computer-use.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Roadmvn/linux-computer-use/issues"
+  },
+  "type": "module",
+  "bin": {
+    "linux-computer-use": "src/index.js"
+  },
+  "main": "src/index.js",
+  "files": [
+    "src",
+    "scripts/install.sh",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "check": "node --check src/index.js && node --check src/policy.js && node --check src/runner.js && node --check src/state.js && node --check src/cursor.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@playwright/cli": "^0.1.18"
+  }
+}

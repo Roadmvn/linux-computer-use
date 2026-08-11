@@ -1,0 +1,12 @@
+node_modules/
+
+# runtime data
+audit.log
+*.log
+.playwright-cli/
+profiles/
+*-profile/
+
+# session artifacts
+*.png
+tmp/
