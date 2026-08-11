@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
 
@@ -125,6 +125,23 @@ export function parseJsonResult(stdout) {
   } catch {
     return null;
   }
+}
+
+/**
+ * Remember which window has the keyboard, so a window we are about to open
+ * does not steal it from whatever the human is doing.
+ */
+export function captureFocus() {
+  if (!process.env.DISPLAY) return null;
+  const r = spawnSync('xdotool', ['getactivewindow'], { encoding: 'utf8' });
+  const id = (r.stdout || '').trim();
+  return id && r.status === 0 ? id : null;
+}
+
+/** Give the keyboard back to the window the human was in. */
+export function restoreFocus(id) {
+  if (!id) return;
+  spawnSync('xdotool', ['windowactivate', id], { stdio: 'ignore' });
 }
 
 /** A headed browser needs a display server. Say so plainly instead of leaking a stack trace. */

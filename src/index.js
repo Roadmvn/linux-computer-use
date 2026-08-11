@@ -7,7 +7,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
-import { displayProblem, evaluate, run } from './runner.js';
+import { captureFocus, displayProblem, evaluate, restoreFocus, run } from './runner.js';
 import { CURSOR_SOURCE } from './cursor.js';
 import { check } from './policy.js';
 import * as desktop from './desktop.js';
@@ -276,11 +276,14 @@ async function handle(name, args) {
       setSession(args.session || 'default');
       const target = getSession();
       let result;
+      let hostFocus = null;
       if (args.cdp) {
         result = await run(target, ['attach', `--cdp=${args.cdp}`], { timeout: 90000 });
       } else {
         const problem = displayProblem();
         if (problem) return text(`CANNOT OPEN A BROWSER\n\n${problem}`);
+        // The browser window appears without taking the keyboard from you.
+        hostFocus = captureFocus();
         const argv = ['open', '--headed'];
         if (args.url) argv.splice(1, 0, args.url);
         if (args.profile) { argv.push('--persistent', `--profile=${args.profile}`); }
@@ -291,6 +294,7 @@ async function handle(name, args) {
         result = await run(target, argv, { timeout: 120000 });
       }
       if (args.cdp && args.url) await run(target, ['goto', args.url]);
+      restoreFocus(hostFocus);
       await injectCursor(target);
       audit({ tool: 'open', session: target, attached: Boolean(args.cdp) });
       return text(result.stdout || result.stderr || 'opened');
