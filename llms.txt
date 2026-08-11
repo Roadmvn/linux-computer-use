@@ -2,11 +2,11 @@
 
 > An open source computer use agent for Linux: an MCP server that lets Claude Code, OpenAI Codex, or any MCP client drive a real browser on your own Linux machine, with a live view, human takeover, and safety guardrails.
 
-Self-hosted browser automation for AI agents on Linux, an alternative to cloud-hosted computer use products. Node.js MCP server wrapping playwright-cli. Drives Chromium, Chrome, Firefox, and Chromium-based browsers (Brave, Opera, Edge) over CDP. Requires Linux, Node.js 20+, and a browser. Licensed MIT. Owner: Roadmvn.
+Self-hosted browser automation for AI agents on Linux, an alternative to cloud-hosted computer use products. Node.js MCP server wrapping playwright-cli. Launches the bundled Chromium, or Chrome, Firefox, WebKit and Edge, and attaches over CDP to any Chromium-based browser you started yourself (Brave, Opera, Vivaldi). Requires Linux, Node.js 20+, and a graphical session (DISPLAY or WAYLAND_DISPLAY). Licensed MIT. Owner: Roadmvn.
 
 ## Docs
 
-- [README](https://github.com/Roadmvn/linux-computer-use/blob/main/README.md): what it is, install, tool reference, comparison with other computer use agents, FAQ
+- [README](https://github.com/Roadmvn/linux-computer-use/blob/main/README.md): what it is, install, use your own browser, tool reference, comparison with other computer use agents, FAQ
 - [Design notes](https://github.com/Roadmvn/linux-computer-use/blob/main/docs/design.md): architecture, control lease between agent and human, guardrails, audit trail
 - [Repository](https://github.com/Roadmvn/linux-computer-use): source, issues, releases
 
@@ -23,29 +23,31 @@ The installer places the server in `~/.linux-computer-use/app` and prints these:
 
 ## MCP tools
 
-- `open`: open or attach a browser session (url, session, profile, browser)
+- `open`: open a browser session, or attach to one already running (url, session, profile, browser, cdp)
 - `goto`: navigate to a URL (url)
 - `snapshot`: accessibility tree of the page with element refs
 - `screenshot`: image capture of the page
-- `click`: click an element by ref (ref)
+- `click`: click an element by ref (ref, confirm)
 - `type`: type text (text)
 - `fill`: fill a field by ref (ref, text)
 - `press`: press a key (key)
-- `mouse`: mouse by coordinates, vision mode (action, x, y)
+- `mouse`: mouse by coordinates, vision mode (action, x, y, confirm)
 - `tabs`: manage tabs (action: list, new, select, close; index, url)
 - `history`: history navigation (direction: back, forward, reload)
-- `status`: session and control lease state
+- `status`: session and control lease state, hands control to the human (takeover)
 - `set_mode`: switch between normal and auto mode (mode)
 
 ## Features
 
-- live view of the browser in a web dashboard, reachable from another machine
-- human takeover: click the viewport to take control, Escape to hand it back
-- visible agent cursor drawn on the page
-- named isolated sessions, persistent profiles, reuse of existing cookies
-- act by accessibility tree (robust) or by pixel coordinates (canvas and custom widgets)
-- guardrails: stops on empty login forms, asks when several accounts are offered, confirms irreversible actions
-- auto mode for complete objectives that can run unattended
+- live view: run `npx playwright-cli show` yourself for a window on this machine, or `npx playwright-cli show --port=7777 --host=0.0.0.0` to reach it from another machine. The server never starts it
+- human takeover: the agent hands over with `status {takeover: true}`, which creates `~/.linux-computer-use/lease`. Every agent action is refused while that file exists, and only the human can delete it
+- use your own browser: start it with `--remote-debugging-port` and a separate `--user-data-dir`, then attach with `cdp`. Since Chromium 136 the debugging port is ignored on the default profile
+- visible agent cursor drawn on the page, following the agent's own actions only
+- named isolated sessions, cookies kept between runs only when `profile` is set
+- act by accessibility tree (robust) or by pixel coordinates, both checked by the same guardrails
+- guardrails fail closed: no credential entry, stops on empty login forms and account choices, confirms irreversible actions, refuses when the target or the page cannot be read
+- audit log of counters only, never field values or keys, URLs reduced to their origin
+- normal mode confirms before committing a form, auto mode does not, both stop on credentials and irreversible actions
 
 ## Related
 
